@@ -1,3 +1,6 @@
-{"name": "mach-m5", "workdir": "../..", "command": ["uv", "run", "python", "-m", "src.bench_candidate"],
- "extra_args": [], "env": {}, "env_by_level": {"2": {"MACH_MEM_BUDGET_GB": "11.5"}},
- "memory_gb": {"3": 4, "2": 12.5}, "version_cmd": ["git", "rev-parse", "--short", "HEAD"]}
+{"name": "mach-m5",
+ "artifact": {"name": "mach-m5-595c5cb", "url": "https://github.com/DataLila/m6-bench/releases/download/mach-m5-595c5cb/mach-m5-595c5cb.tar.gz",
+              "sha256": "6507edca55d36fc3b5e2180a70d32715d6412832aaee7700d6a3d2c5a698ff83"},
+ "command": ["mach-m5/mach-m5", "bench"], "prepare": ["mach-m5/mach-m5", "prepare"],
+ "env": {"MACH_GRID_DIR": "{bench}/work/mach-m5"}, "env_by_level": {"2": {"MACH_MEM_BUDGET_GB": "11.5"}},
+ "memory_gb": {"3": 4, "2": 12.5}, "version_cmd": ["cat", "mach-m5/src/_version.txt"]}
