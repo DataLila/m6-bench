@@ -3,7 +3,7 @@
 seed changes the rate a little, as a perturbed start changes a real solver's path), with a CPU busy-wait per
 iteration so that energy is measurable. For testing the harness and as a template for adapters.
 
-    python3 harness/examples/toy_candidate.py --level 3 --mach 0.84 --alpha 3.06 --seed 1 --perturb 1e-6 --max-seconds 20
+    python3 examples/toy_candidate.py --level 3 --mach 0.84 --alpha 3.06 --seed 1 --perturb 1e-6 --max-seconds 20
 """
 import argparse
 import json

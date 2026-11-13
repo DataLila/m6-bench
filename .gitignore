@@ -1,0 +1,7 @@
+# fetched candidate builds, their prepared data, session results
+artifacts/
+work/
+results/
+__pycache__/
+.pytest_cache/
+.DS_Store

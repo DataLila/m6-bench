@@ -1,6 +1,6 @@
 # CFD efficiency benchmark: candidate protocol (v0.1, draft)
 
-The harness (`harness/bench.py`) runs every candidate solver on the same machine, one run at a time, with a cool-down
+The harness (`bench.py`) runs every candidate solver on the same machine, one run at a time, with a cool-down
 and an idle power baseline before each run, and measures time **and energy** to the force bands. A candidate is any
 solver that accepts the command-line options below and prints the `@bench` lines below. Nothing else is required: the
 harness never links against, imports or inspects a candidate.

@@ -1,4 +1,4 @@
-"""The benchmark harness (harness/: standard library only): scoring rules, energy integration, the stop rule,
+"""The benchmark harness (standard library only): scoring rules, energy integration, the stop rule,
 powermetrics parsing, and one end-to-end session with the toy candidate (CPU only, ~15 s)."""
 import json
 import plistlib
@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "harness"))
+sys.path.insert(0, str(ROOT))
 import bench  # noqa: E402
 import scoring as SC  # noqa: E402
 import sensors as S  # noqa: E402
@@ -108,13 +108,13 @@ def test_libproc_counters_of_this_process():
 
 
 def test_toy_session_end_to_end(tmp_path):
-    cfg = json.loads((ROOT / "harness/configs/toy.json").read_text())
-    cfg["candidates"] = [str(ROOT / "harness/candidates/toy.json")]
+    cfg = json.loads((ROOT / "configs/toy.json").read_text())
+    cfg["candidates"] = [str(ROOT / "candidates/toy.json")]
     cfg["seeds"] = [1, 2]
     p = tmp_path / "toy.json"
     p.write_text(json.dumps(cfg))
     out = tmp_path / "out"
-    subprocess.run([sys.executable, str(ROOT / "harness/bench.py"), "run", str(p), str(out), "--no-sudo"], check=True,
+    subprocess.run([sys.executable, str(ROOT / "bench.py"), "run", str(p), str(out), "--no-sudo", "--dev"], check=True,
                    capture_output=True, timeout=120)
     summ = json.loads((out / "summary.json").read_text())
     assert summ["refs"]["toy|L3-M0.84"]["steadiness"] < 1e-8
@@ -122,4 +122,48 @@ def test_toy_session_end_to_end(tmp_path):
     assert all(rows[b]["reached"] == 2 for b in (1e-3, 1e-4, 1e-5))
     assert rows[1e-3]["t"]["median"] < rows[1e-5]["t"]["median"]
     assert all(r["stop"] == "band held" for r in summ["runs"])
-    assert (out / "report.md").read_text().startswith("# Benchmark report")
+    report = (out / "report.md").read_text()
+    assert report.startswith("# Benchmark report") and "Harness: " in report
+    assert json.loads((out / "session.json").read_text())["harness"]["files"].keys() == set(bench.CODE)
+
+
+def _artifact(tmp_path, monkeypatch):
+    import hashlib
+    import tarfile
+    monkeypatch.setattr(bench, "ARTIFACTS", tmp_path / "artifacts")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "run.sh").write_text("echo hi\n")
+    tgz = tmp_path / "pkg.tar.gz"
+    with tarfile.open(tgz, "w:gz") as t:
+        t.add(tmp_path / "pkg", arcname="pkg")
+    sha = hashlib.sha256(tgz.read_bytes()).hexdigest()
+    return dict(name="t", artifact=dict(name="pkg-1", url=tgz.as_uri(), sha256=sha))
+
+
+def test_fetch_verifies_and_unpacks_a_pinned_build(tmp_path, monkeypatch):
+    m = _artifact(tmp_path, monkeypatch)
+    assert not bench.artifact_ok(m)
+    bench.fetch(m)
+    assert bench.artifact_ok(m) and (tmp_path / "artifacts/pkg-1/pkg/run.sh").exists()
+    m2 = dict(m, artifact=dict(m["artifact"], name="pkg-2", sha256="0" * 64))
+    with pytest.raises(SystemExit, match="sha256 mismatch"):
+        bench.fetch(m2)
+    assert not (tmp_path / "artifacts/pkg-2").exists() and not bench.artifact_ok(m2)
+
+
+def test_manifest_workdir_env_and_duplicate_names(tmp_path, monkeypatch):
+    m = _artifact(tmp_path, monkeypatch)
+    p = tmp_path / "m.json"
+    p.write_text(json.dumps(dict(m, command=["x"], env={"D": "{bench}/work"})))
+    lm = bench.load_manifest(p)
+    assert lm["workdir"] == str(tmp_path / "artifacts/pkg-1")
+    assert bench.cand_env(lm)["D"] == str(bench.BENCH / "work")
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"candidates": ["m.json"], "scenarios": []}))
+    with pytest.raises(SystemExit, match="must differ"):
+        bench.load_config(cfg, [p])
+
+
+def test_provenance_names_the_measuring_code():
+    h = bench.harness_provenance()
+    assert set(h["files"]) == set(bench.CODE) and all(len(v) == 16 for v in h["files"].values())

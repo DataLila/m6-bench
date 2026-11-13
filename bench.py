@@ -2,34 +2,46 @@
 """CFD efficiency benchmark harness: runs candidate solvers (PROTOCOL.md) one at a time and measures time and energy
 to the force bands, plus every machine metric it can read. Python 3.9+ standard library only.
 
-    python3 harness/bench.py probe                       # sensors, sudo, machine
-    python3 harness/bench.py sudoers                     # print a sudoers rule for passwordless powermetrics
-    python3 harness/bench.py run CONFIG.json OUTDIR      # references (once), then all runs, then score + report
-    python3 harness/bench.py score OUTDIR                # re-score and re-write the report from the recorded runs
+    python3 bench.py probe                       # sensors, sudo, machine
+    python3 bench.py sudoers                     # print a sudoers rule for passwordless powermetrics
+    python3 bench.py fetch [MANIFEST ...]        # download + verify pinned candidate builds (default: candidates/)
+    python3 bench.py prepare MANIFEST [ARGS]     # a candidate's one-time, untimed preparation (its "prepare" command)
+    python3 bench.py run CONFIG.json OUTDIR [--add-candidate MANIFEST]   # references, all runs, score + report
+    python3 bench.py score OUTDIR                # re-score and re-write the report from the recorded runs
 
 CONFIG.json (paths relative to it):
-    {"candidates": ["candidates/mach_m5.json"],
+    {"candidates": ["../candidates/mach_m5.json"],
      "scenarios": [{"name": "L3-M0.84", "level": 3, "mach": 0.84, "alpha": 3.06}],
      "seeds": [1, 2, 3], "bands": [1e-3, 1e-4, 1e-5], "max_seconds": 600, ...}    (all keys: DEFAULTS below)
-A candidate manifest:
-    {"name": "mach-m5", "workdir": "..", "command": ["uv", "run", "python", "-m", "src.bench_candidate"],
-     "extra_args": [], "env": {}, "env_by_level": {"2": {"MACH_MEM_BUDGET_GB": "11.5"}},
+A candidate manifest (paths relative to it; "{bench}" in env values is this directory):
+    {"name": "my-solver", "workdir": "/path/to/solver", "command": ["./bench_adapter"],
+     "extra_args": [], "env": {}, "env_by_level": {"2": {"OMP_NUM_THREADS": "8"}},
      "memory_gb": {"3": 4, "2": 12.5}, "version_cmd": ["git", "rev-parse", "--short", "HEAD"]}
+or a pinned build: "artifact": {"name": ..., "url": ..., "sha256": ...} (fetched into artifacts/<name>/, which is
+then the default workdir), with "prepare": [...] for its one-time setup.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
+import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+BENCH = Path(__file__).resolve().parent
+ARTIFACTS = BENCH / "artifacts"
+CODE = ["bench.py", "sensors.py", "scoring.py", "PROTOCOL.md"]     # what measures and scores: must be committed
+
+sys.path.insert(0, str(BENCH))
 import scoring as SC  # noqa: E402
 import sensors as S  # noqa: E402
 
@@ -58,22 +70,97 @@ def _merge(base, over):
     return out
 
 
-def load_config(path: Path) -> dict:
+def load_manifest(p: Path) -> dict:
+    m = json.loads(p.read_text())
+    m["manifest"] = str(p)
+    if "artifact" in m and "workdir" not in m:
+        m["workdir"] = str(ARTIFACTS / m["artifact"]["name"])
+    else:
+        m["workdir"] = str((p.parent / m.get("workdir", ".")).resolve())
+    return m
+
+
+def load_config(path: Path, extra=()) -> dict:
     cfg = _merge(DEFAULTS, json.loads(path.read_text()))
     cands = []
     for c in cfg["candidates"]:                              # a manifest path, or {"manifest": path, overrides...}
         over = dict(c) if isinstance(c, dict) else {}
-        p = (path.parent / over.pop("manifest", c if isinstance(c, str) else "")).resolve()
-        m = json.loads(p.read_text())
-        m["workdir"] = str((p.parent / m.get("workdir", ".")).resolve())
+        m = load_manifest((path.parent / over.pop("manifest", c if isinstance(c, str) else "")).resolve())
         m.update(over)
         cands.append(m)
+    cands += [load_manifest(Path(p).resolve()) for p in extra]  # e.g. your own solver, without editing the config
+    names = [c["name"] for c in cands]
+    if len(set(names)) != len(names):
+        sys.exit(f"candidate names must differ: {names}")
     cfg["candidates"] = cands
     return cfg
 
 
+def cand_env(cand, level=None) -> dict:
+    """The candidate's environment: ours plus its env (and env_by_level); "{bench}" is this directory."""
+    env = dict(cand.get("env", {}), **cand.get("env_by_level", {}).get(str(level), {}))
+    return dict(os.environ, **{k: str(v).replace("{bench}", str(BENCH)) for k, v in env.items()})
+
+
 def log(msg):
     print(f"[harness {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+# ---------------------------------------------------------------- pinned candidate builds and provenance ---
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def artifact_ok(cand) -> bool:
+    a = cand.get("artifact")
+    if a is None:
+        return True
+    marker = ARTIFACTS / a["name"] / ".sha256"
+    return marker.exists() and marker.read_text().strip() == a["sha256"]
+
+
+def fetch(cand):
+    """Download a pinned build, check its SHA-256, unpack it into artifacts/<name>/ (once)."""
+    a = cand["artifact"]
+    if artifact_ok(cand):
+        log(f"{a['name']}: present (sha256 verified when fetched)")
+        return
+    ARTIFACTS.mkdir(exist_ok=True)
+    tgz = ARTIFACTS / (a["name"] + ".tar.gz")
+    if not (tgz.exists() and _sha256(tgz) == a["sha256"]):
+        log(f"{a['name']}: downloading {a['url']}")
+        part = ARTIFACTS / (a["name"] + ".part")
+        with urllib.request.urlopen(a["url"]) as r, open(part, "wb") as f:
+            shutil.copyfileobj(r, f, 1 << 20)
+        got = _sha256(part)
+        if got != a["sha256"]:
+            part.unlink()
+            sys.exit(f"{a['name']}: sha256 mismatch (got {got}, the manifest pins {a['sha256']}): not unpacked")
+        part.rename(tgz)
+    dest = ARTIFACTS / a["name"]
+    shutil.rmtree(dest, ignore_errors=True)
+    with tarfile.open(tgz) as t:
+        for mem in t.getmembers():                   # Python < 3.12 has no extraction filter: nothing may escape
+            for name in [mem.name] + ([mem.linkname] if mem.issym() or mem.islnk() else []):
+                if name.startswith("/") or ".." in Path(name).parts:
+                    sys.exit(f"{a['name']}: refusing to unpack {mem.name!r} (path leaves the artifact directory)")
+        t.extractall(dest, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+    (dest / ".sha256").write_text(a["sha256"] + "\n")
+    log(f"{a['name']}: sha256 verified, unpacked into {dest}")
+
+
+def harness_provenance() -> dict:
+    """Which harness measured: its commit, whether the measuring code differs from it, and the code's hashes."""
+    def git(*c):
+        return S.sh(["git", *c], cwd=str(BENCH)).strip()
+    return dict(commit=git("rev-parse", "HEAD") or None, describe=git("describe", "--always", "--tags") or None,
+                modified=bool(git("status", "--porcelain", "--", *CODE)),
+                files={f: _sha256(BENCH / f)[:16] for f in CODE})
 
 
 # -------------------------------------------------------------------------------------------- one run ---
@@ -129,7 +216,7 @@ def run_one(cfg, cand, scen, seed, kind, outdir: Path, pm: S.PowerMetrics | None
     cmd = list(cand["command"]) + ["--level", str(L), "--mach", str(scen["mach"]), "--alpha", str(scen["alpha"]),
                                    "--seed", str(seed), "--perturb", str(cfg["perturb"]),
                                    "--max-seconds", str(max_seconds)] + list(cand.get("extra_args", []))
-    env = dict(os.environ, **cand.get("env", {}), **cand.get("env_by_level", {}).get(str(L), {}))
+    env = cand_env(cand, L)
     mem_limit = cand.get("memory_gb", {}).get(str(L))
     info = dict(candidate=cand["name"], scenario=scen["name"], level=L, mach=scen["mach"], alpha=scen["alpha"],
                 seed=seed, kind=kind, cmd=cmd, top_before=S.top_processes(), power_source=S.power_source(),
@@ -257,7 +344,14 @@ def version(cand):
 
 
 def cmd_run(a):
-    cfg = load_config(a.config)
+    cfg = load_config(a.config, a.add_candidate)
+    prov = harness_provenance()
+    if prov["modified"] and not a.dev:
+        sys.exit(f"the harness code differs from commit {prov['describe']} ({', '.join(CODE)}): commit it or pass "
+                 "--dev (such sessions are marked as made with a modified harness)")
+    missing = [c["name"] for c in cfg["candidates"] if not artifact_ok(c)]
+    if missing:
+        sys.exit(f"pinned builds not fetched or not matching their manifest: {missing}; run: python3 bench.py fetch")
     out = a.out
     out.mkdir(parents=True, exist_ok=True)
     # keep the Mac awake while the harness runs (idle sleep on battery corrupts baselines; a closed lid still sleeps,
@@ -280,7 +374,8 @@ def cmd_run(a):
     rng.shuffle(order)
     log(f"session idle baseline ({cfg['session_idle_s']} s) ...")
     idle = idle_baseline(pm, cfg["session_idle_s"])
-    session = dict(started=time.strftime("%Y-%m-%d %H:%M:%S"), machine=S.machine_info(), powermetrics=pm is not None,
+    session = dict(started=time.strftime("%Y-%m-%d %H:%M:%S"), harness=prov, config_file=str(a.config),
+                   machine=S.machine_info(), powermetrics=pm is not None,
                    idle=idle, config={k: v for k, v in cfg.items() if k != "candidates"},
                    candidates=[dict(c, version=version(c)) for c in cfg["candidates"]],
                    order=[(cfg["candidates"][c]["name"], cfg["scenarios"][s]["name"], seed) for c, s, seed in order])
@@ -394,6 +489,14 @@ def _rng(d, fmt="{:.1f}"):
     return f"{fmt.format(d['median'])} ({fmt.format(d['min'])}–{fmt.format(d['max'])})"
 
 
+def _harness_line(h) -> str:
+    if not h:
+        return "not recorded"
+    mod = " **with modified measuring code (--dev)**" if h.get("modified") else ""
+    return f"{h.get('describe') or 'not a git checkout'} ({(h.get('commit') or '')[:12]}){mod}; code " + \
+        ", ".join(f"{k} {v}" for k, v in h.get("files", {}).items())
+
+
 def report(summary) -> str:
     s = summary["session"]
     m = s["machine"]
@@ -402,7 +505,10 @@ def report(summary) -> str:
              f"{m['os'].get('productVersion')}; power source {m['power_source']}, low power mode "
              f"{m['low_power_mode']}; powermetrics {'yes' if s['powermetrics'] else 'no (energy: SMC batches)'}; "
              f"session idle {', '.join(f'{k} {v:.2f}' for k, v in s['idle'].items())} W.", "",
-             "Candidates: " + "; ".join(f"{c['name']} ({c.get('version')}) `{' '.join(c['command'] + c.get('extra_args', []))}`"
+             "Harness: " + _harness_line(s.get("harness")), "",
+             "Candidates: " + "; ".join(f"{c['name']} ({c.get('version')}"
+                                        + (f", build sha256 {c['artifact']['sha256'][:16]}" if c.get("artifact") else "")
+                                        + f") `{' '.join(c['command'] + c.get('extra_args', []))}`"
                                         for c in s["candidates"]), "",
              f"## Reference forces (seed {s['config'].get('reference', {}).get('seed', 1000)}, long run)", "",
              "| candidate / scenario | C_L | C_D | C_M | steadiness | drift / min | records | vs CFL3D (C_L, C_D, C_M) |",
@@ -460,11 +566,19 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("probe")
     sub.add_parser("sudoers")
+    f = sub.add_parser("fetch", help="download and verify pinned candidate builds")
+    f.add_argument("manifests", type=Path, nargs="*", help="default: every candidates/*.json with an artifact")
+    p = sub.add_parser("prepare", help="run a candidate's one-time preparation (untimed)")
+    p.add_argument("manifest", type=Path)
+    p.add_argument("args", nargs=argparse.REMAINDER, help="passed to the candidate's prepare command")
     r = sub.add_parser("run")
     r.add_argument("config", type=Path)
     r.add_argument("out", type=Path)
+    r.add_argument("--add-candidate", type=Path, action="append", default=[], metavar="MANIFEST",
+                   help="also run this candidate (repeatable)")
     r.add_argument("--no-sudo", action="store_true", help="skip powermetrics (no CPU / GPU power)")
     r.add_argument("--refresh-refs", action="store_true", help="re-run the reference runs")
+    r.add_argument("--dev", action="store_true", help="allow uncommitted changes to the measuring code")
     sc = sub.add_parser("score")
     sc.add_argument("out", type=Path)
     a = ap.parse_args()
@@ -472,6 +586,18 @@ def main():
         print(json.dumps(S.probe(), indent=1))
     elif a.cmd == "sudoers":
         cmd_sudoers(a)
+    elif a.cmd == "fetch":
+        paths = a.manifests or sorted((BENCH / "candidates").glob("*.json"))
+        for m in (load_manifest(Path(x).resolve()) for x in paths):
+            if "artifact" in m:
+                fetch(m)
+    elif a.cmd == "prepare":
+        m = load_manifest(a.manifest.resolve())
+        if not artifact_ok(m):
+            sys.exit(f"{m['name']}: fetch it first: python3 bench.py fetch {a.manifest}")
+        if "prepare" not in m:
+            sys.exit(f"{m['name']}: its manifest has no prepare command")
+        sys.exit(subprocess.run(list(m["prepare"]) + a.args, cwd=m["workdir"], env=cand_env(m)).returncode)
     elif a.cmd == "run":
         cmd_run(a)
     else:

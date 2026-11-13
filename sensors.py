@@ -1,6 +1,6 @@
 """Machine and process sensors for the benchmark harness (macOS, Python standard library only).
 
-    python3 harness/sensors.py          # probe: what this machine exposes, with a self-check of the libproc offsets
+    python3 sensors.py          # probe: what this machine exposes, with a self-check of the libproc offsets
 
 Sources (no sudo unless noted):
   * whole-system power: `ioreg` AppleSmartBattery PowerTelemetryData (SystemPowerIn on mains, BatteryPower on battery,
