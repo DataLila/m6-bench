@@ -158,7 +158,7 @@ def harness_provenance() -> dict:
     """Which harness measured: its commit, whether the measuring code differs from it, and the code's hashes."""
     def git(*c):
         return S.sh(["git", *c], cwd=str(BENCH)).strip()
-    return dict(commit=git("rev-parse", "HEAD") or None, describe=git("describe", "--always", "--tags") or None,
+    return dict(commit=git("rev-parse", "HEAD") or None, describe=git("describe", "--always", "--tags", "--match", "v*") or None,
                 modified=bool(git("status", "--porcelain", "--", *CODE)),
                 files={f: _sha256(BENCH / f)[:16] for f in CODE})
 
