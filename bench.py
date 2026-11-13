@@ -34,7 +34,7 @@ import scoring as SC  # noqa: E402
 import sensors as S  # noqa: E402
 
 DEFAULTS = dict(
-    seeds=[1, 2, 3],                 # seed 0 is the reference run's (plain free stream)
+    seeds=[1, 2, 3],
     perturb=1e-6,
     bands=[1e-3, 1e-4, 1e-5],
     max_seconds=600,                 # solve budget passed to the candidate (--max-seconds)
@@ -45,7 +45,8 @@ DEFAULTS = dict(
     idle_s=10,                       # idle baseline before each run (powermetrics)
     cooldown=dict(min_s=60, max_s=300, settle_frac=1.25, settle_add_w=0.5),
     hold=dict(records=5, frac=0.25),
-    reference=dict(max_seconds=1800, window=10, frac=0.25, steady_rel=1e-8),
+    reference=dict(max_seconds=1800, window=10, frac=0.25, steady_rel=1e-8, seed=1000),   # a perturbed start: the
+                                     # plain one (seed 0) can keep exact ties and land 2e-5 away from every seed
     shuffle_seed=1,
 )
 
@@ -295,7 +296,7 @@ def cmd_run(a):
                 continue
             for _ in range(3):                                # repeated if the Mac slept during it
                 cooldown(cfg, pm, idle)
-                run = run_one(cfg, cand, scen, 0, "ref", out, pm,
+                run = run_one(cfg, cand, scen, rc["seed"], "ref", out, pm,
                               StopRule(scen["level"], window=rc["window"], steady=rc["steady_rel"], frac=rc["frac"]),
                               scen.get("reference_max_seconds", rc["max_seconds"]))
                 if run["slept_s"] <= SLEEP_TOL_S:
@@ -358,7 +359,7 @@ def cmd_score(a):
     session = json.loads((out / "session.json").read_text())
     refs = json.loads((out / "refs.json").read_text()) if (out / "refs.json").exists() else {}
     rc = _merge(DEFAULTS["reference"], session["config"].get("reference", {}))
-    for p in sorted((out / "runs").glob("*__ref0/run.json")):  # references re-derived from the recorded runs
+    for p in sorted((out / "runs").glob("*__ref*/run.json")):  # references re-derived from the recorded runs
         run = json.loads(p.read_text())
         refs[f"{run['candidate']}|{run['scenario']}"] = SC.reference(SC.fine(run["records"], run["level"]),
                                                                     rc["window"], rc["frac"])
@@ -403,7 +404,7 @@ def report(summary) -> str:
              f"session idle {', '.join(f'{k} {v:.2f}' for k, v in s['idle'].items())} W.", "",
              "Candidates: " + "; ".join(f"{c['name']} ({c.get('version')}) `{' '.join(c['command'] + c.get('extra_args', []))}`"
                                         for c in s["candidates"]), "",
-             "## Reference forces (seed 0, long run)", "",
+             f"## Reference forces (seed {s['config'].get('reference', {}).get('seed', 1000)}, long run)", "",
              "| candidate / scenario | C_L | C_D | C_M | steadiness | drift / min | records | vs CFL3D (C_L, C_D, C_M) |",
              "|---|---|---|---|---|---|---|---|"]
     scen = {x["name"]: x for x in s["config"]["scenarios"]}

@@ -61,9 +61,11 @@ Only `iter` records of the finest level (`level == L`) are scored; coarser ones 
 
 ## 4. Reference forces
 
-For each candidate and scenario the harness first makes one **reference run** (seed 0, long budget): C_ref is the mean
-of the last records of that run, and the run's force steadiness (largest relative spread over those records) is
-reported with it. A band tighter than about 10× that steadiness is reported as *not verifiable* for that candidate.
+For each candidate and scenario the harness first makes one **reference run** (seed 1000, a perturbed start like every
+other run, long budget; the plain start can keep exact ties that perturbed starts break and land on a different slow
+path: one candidate's seed 0 converged 2e-5 away from every perturbed seed, which agreed among themselves to 1e-6).
+C_ref is the mean over the last quarter of that run's time, reported with its steadiness (largest relative deviation
+over that window) and drift per minute. A band tighter than about 10× that steadiness is reported as *not verifiable* for that candidate.
 C_ref is each candidate's own converged answer (the bands measure iterative convergence); accuracy against CFL3D is a
 separate table (§6).
 
