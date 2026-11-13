@@ -134,7 +134,7 @@ def run_one(cfg, cand, scen, seed, kind, outdir: Path, pm: S.PowerMetrics | None
                 seed=seed, kind=kind, cmd=cmd, top_before=S.top_processes(), power_source=S.power_source(),
                 battery=S.battery_percent(), mem_before=S.memory_stats())
     out_f, err_f = open(d / "stdout.log", "w"), open(d / "stderr.log", "w")
-    tm0 = time.monotonic()
+    tm0, tw0 = time.monotonic(), time.time()
     p = subprocess.Popen(cmd, cwd=cand["workdir"], env=env, stdout=subprocess.PIPE, stderr=err_f, text=True,
                          bufsize=1, start_new_session=True)
     tree = S.ProcessTree(p.pid)
@@ -182,12 +182,14 @@ def run_one(cfg, cand, scen, seed, kind, outdir: Path, pm: S.PowerMetrics | None
             _kill(p, why, "band held" if stop.ref is not None else "reference steady")
     rc = p.wait()
     t_end = time.monotonic() - tm0
+    slept = max(0.0, (time.time() - tw0) - t_end)            # the monotonic clock stops while the Mac sleeps
     for s in samplers.values():
         s.stop()
     out_f.close()
     err_f.close()
     rel = lambda ss: [(t - tm0, v) for t, v in ss]           # noqa: E731
     run = dict(info, rc=rc, stop=why[0] if why else ("done" if done else f"exit {rc}"), t_setup=t_setup, t_end=t_end,
+               slept_s=slept, battery_after=S.battery_percent(),
                hello=hello, done=done, records=records, mem_after=S.memory_stats(),
                **{k: rel(s.samples) for k, s in samplers.items()},
                powermetrics=rel(pm.window(tm0 - 2, tm0 + t_end + 2)) if pm else [])
@@ -200,13 +202,21 @@ def run_one(cfg, cand, scen, seed, kind, outdir: Path, pm: S.PowerMetrics | None
 
 # ------------------------------------------------------------------------------------------ the session ---
 
-def idle_baseline(pm, seconds) -> dict:
-    sys_s = S.Sampler(S.system_power, 1.0)
-    sys_s.start()
-    t0 = time.monotonic()
-    time.sleep(seconds)
-    t1 = time.monotonic()
-    sys_s.stop()
+SLEEP_TOL_S = 2.0                    # a run or baseline during which the Mac slept longer than this is discarded
+
+
+def idle_baseline(pm, seconds, tries: int = 3) -> dict:
+    """Mean idle power over `seconds` (repeated if the Mac slept meanwhile: the reading is then meaningless)."""
+    for _ in range(tries):
+        sys_s = S.Sampler(S.system_power, 1.0)
+        sys_s.start()
+        t0, w0 = time.monotonic(), time.time()
+        time.sleep(seconds)
+        t1 = time.monotonic()
+        sys_s.stop()
+        if (time.time() - w0) - (t1 - t0) <= SLEEP_TOL_S:
+            break
+        log("the Mac slept during the idle baseline: repeating it")
     out = {}
     if pm:
         w = pm.window(t0, t1)
@@ -249,6 +259,12 @@ def cmd_run(a):
     cfg = load_config(a.config)
     out = a.out
     out.mkdir(parents=True, exist_ok=True)
+    # keep the Mac awake while the harness runs (idle sleep on battery corrupts baselines; a closed lid still sleeps,
+    # which every run detects and discards, see SLEEP_TOL_S)
+    caf = subprocess.Popen(["caffeinate", "-i", "-s", "-w", str(os.getpid())])
+    src, batt = S.power_source(), S.battery_percent()
+    if src != "AC Power" and batt is not None and batt < 40:
+        log(f"warning: on battery at {batt}%: a long session may run out or enter low power mode; plug in")
     pm = None
     if not a.no_sudo and S.sudo_prompt():
         pm = S.PowerMetrics(cfg["powermetrics_ms"])
@@ -277,10 +293,14 @@ def cmd_run(a):
             key = f"{cand['name']}|{scen['name']}"
             if key in refs and not a.refresh_refs:
                 continue
-            cooldown(cfg, pm, idle)
-            run = run_one(cfg, cand, scen, 0, "ref", out, pm,
-                          StopRule(scen["level"], window=rc["window"], steady=rc["steady_rel"], frac=rc["frac"]),
-                          scen.get("reference_max_seconds", rc["max_seconds"]))
+            for _ in range(3):                                # repeated if the Mac slept during it
+                cooldown(cfg, pm, idle)
+                run = run_one(cfg, cand, scen, 0, "ref", out, pm,
+                              StopRule(scen["level"], window=rc["window"], steady=rc["steady_rel"], frac=rc["frac"]),
+                              scen.get("reference_max_seconds", rc["max_seconds"]))
+                if run["slept_s"] <= SLEEP_TOL_S:
+                    break
+                log(f"the Mac slept {run['slept_s']:.0f} s during the reference run: repeating it")
             r = SC.reference(SC.fine(run["records"], scen["level"]), rc["window"], rc["frac"])
             refs[key] = r
             refs_p.write_text(json.dumps(refs, indent=1))
@@ -291,15 +311,20 @@ def cmd_run(a):
         if r is None:
             log(f"no reference for {cand['name']} {scen['name']}: skipped")
             continue
-        cooldown(cfg, pm, idle)
-        run_idle = idle_baseline(pm, cfg["idle_s"]) if pm else {}
-        stop = StopRule(scen["level"], ref=r["ref"], tol=min(cfg["bands"]), hold=cfg["hold"])
-        run = run_one(cfg, cand, scen, seed, "s", out, pm, stop, scen.get("max_seconds", cfg["max_seconds"]))
+        for _ in range(2):                                    # repeated once if the Mac slept during it
+            cooldown(cfg, pm, idle)
+            run_idle = idle_baseline(pm, cfg["idle_s"]) if pm else {}
+            stop = StopRule(scen["level"], ref=r["ref"], tol=min(cfg["bands"]), hold=cfg["hold"])
+            run = run_one(cfg, cand, scen, seed, "s", out, pm, stop, scen.get("max_seconds", cfg["max_seconds"]))
+            if run["slept_s"] <= SLEEP_TOL_S:
+                break
+            log(f"the Mac slept {run['slept_s']:.0f} s during the run: repeating it")
         run["idle"] = dict(idle, **run_idle)
         p = out / "runs" / f"{cand['name']}__{scen['name']}__s{seed}" / "run.json"
         p.write_text(json.dumps(run))
     if pm:
         pm.stop()
+    caf.terminate()
     cmd_score(argparse.Namespace(out=out))
 
 
@@ -344,6 +369,9 @@ def cmd_score(a):
         run = json.loads(p.read_text())
         r = refs.get(f"{run['candidate']}|{run['scenario']}")
         if r is None or run.get("kind") != "s":
+            continue
+        if run.get("slept_s", 0.0) > SLEEP_TOL_S:                 # the machine slept: not a valid measurement
+            log(f"{p.parent.name}: the Mac slept {run['slept_s']:.0f} s during this run, not scored")
             continue
         idle = run.get("idle", session.get("idle", {}))
         scored.append(dict(candidate=run["candidate"], scenario=run["scenario"], seed=run["seed"], stop=run["stop"],

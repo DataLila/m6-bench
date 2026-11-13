@@ -42,7 +42,10 @@ never be asked, allow `powermetrics` alone without a password:
 **Machine state matters:** close other applications, keep the display dim or off, and either run on battery (the
 whole-system channel is then exact battery drain) or on mains with the battery full (charging power would count). The
 report records the power source, battery level, low-power mode, the busiest processes before each run and the
-memory state before and after.
+memory state before and after. The harness holds a `caffeinate` assertion (no idle sleep) for the whole session;
+a closed lid still sleeps the Mac: every run and idle baseline compares wall and monotonic time, and one during which
+the Mac slept is repeated (references, baselines) or discarded from scoring. Keep the lid open and, for long sessions,
+the Mac plugged in.
 
 ## Adding a candidate
 
