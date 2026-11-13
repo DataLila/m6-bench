@@ -104,7 +104,9 @@ def test_powermetrics_sample_parsing():
 def test_libproc_counters_of_this_process():
     r = S.proc_rusage(__import__("os").getpid())
     assert r is not None and r["footprint_gb"] > 0 and r["max_footprint_gb"] >= r["footprint_gb"]
-    assert r["instructions"] > 0 and r["user_s"] > 0
+    assert r["user_s"] > 0
+    vm = S.sysctl("kern.hv_vmm_present") == "1"         # virtual machines (CI runners) expose no PMU counters
+    assert r["instructions"] > 0 or vm
 
 
 def test_toy_session_end_to_end(tmp_path):
