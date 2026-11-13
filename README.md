@@ -56,7 +56,7 @@ and list it in the config's `candidates`. `examples/toy_candidate.py` is a compl
 
 ## Config keys
 
-`candidates`, `scenarios` (name, level, mach, alpha; optional max_seconds, reference_max_seconds), `seeds`, `perturb`, `bands`, `max_seconds`, `setup_grace_s`,
+`candidates` (manifest paths, or {"manifest": path, "name": ..., "extra_args": [...]} variants), `scenarios` (name, level, mach, alpha; optional max_seconds, reference_max_seconds), `seeds`, `perturb`, `bands`, `max_seconds`, `setup_grace_s`,
 `sample_s`, `powermetrics_ms`, `session_idle_s`, `idle_s`, `cooldown` {min_s, max_s, settle_frac, settle_add_w},
 `hold` {records, frac}, `reference` {max_seconds, window, steady_rel}, `shuffle_seed`; defaults in `bench.py`.
 

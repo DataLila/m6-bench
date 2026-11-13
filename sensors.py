@@ -240,7 +240,12 @@ class ProcessTree:
 # ----------------------------------------------------------------------------------- powermetrics (sudo) ---
 
 def sudo_ok() -> bool:
-    return subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0
+    """Whether powermetrics runs without a password (a sudoers rule for powermetrics alone does not cover `true`)."""
+    try:
+        return subprocess.run(["sudo", "-n", "powermetrics", "-n", "1", "-i", "50", "--samplers", "cpu_power"],
+                              capture_output=True, timeout=20).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def sudo_prompt() -> bool:
@@ -323,7 +328,8 @@ def parse_powermetrics(d: dict) -> dict:
     if "idle_ratio" in g:
         out["gpu_active"] = 1.0 - g["idle_ratio"]
     if "freq_hz" in g:
-        out["gpu_mhz"] = g["freq_hz"] / 1e6
+        f = g["freq_hz"]                                  # named Hz, reported in MHz (M5: 338.0)
+        out["gpu_mhz"] = f / 1e6 if f > 1e5 else f
     if "thermal_pressure" in d:
         out["thermal"] = d["thermal_pressure"]
     return out

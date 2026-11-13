@@ -60,10 +60,12 @@ def _merge(base, over):
 def load_config(path: Path) -> dict:
     cfg = _merge(DEFAULTS, json.loads(path.read_text()))
     cands = []
-    for c in cfg["candidates"]:
-        p = (path.parent / c).resolve()
+    for c in cfg["candidates"]:                              # a manifest path, or {"manifest": path, overrides...}
+        over = dict(c) if isinstance(c, dict) else {}
+        p = (path.parent / over.pop("manifest", c if isinstance(c, str) else "")).resolve()
         m = json.loads(p.read_text())
         m["workdir"] = str((p.parent / m.get("workdir", ".")).resolve())
+        m.update(over)
         cands.append(m)
     cfg["candidates"] = cands
     return cfg
