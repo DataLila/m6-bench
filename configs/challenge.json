@@ -1,8 +1,8 @@
 {"candidates": ["../candidates/mach_m5.json"],
  "scenarios": [
-  {"name": "L3-M0.84", "level": 3, "mach": 0.84, "alpha": 3.06, "max_seconds": 300, "reference_max_seconds": 900},
-  {"name": "L3-M0.83", "level": 3, "mach": 0.83, "alpha": 2.5, "max_seconds": 300, "reference_max_seconds": 900},
-  {"name": "L3-M0.70", "level": 3, "mach": 0.70, "alpha": 1.0, "max_seconds": 300, "reference_max_seconds": 900},
-  {"name": "L2-M0.84", "level": 2, "mach": 0.84, "alpha": 3.06, "max_seconds": 1500, "reference_max_seconds": 3600}],
+  {"name": "L3-M0.84", "level": 3, "mach": 0.84, "alpha": 3.06, "max_seconds": 300, "reference_max_seconds": 300},
+  {"name": "L3-M0.83", "level": 3, "mach": 0.83, "alpha": 2.5, "max_seconds": 300, "reference_max_seconds": 300},
+  {"name": "L3-M0.70", "level": 3, "mach": 0.70, "alpha": 1.0, "max_seconds": 300, "reference_max_seconds": 300},
+  {"name": "L2-M0.84", "level": 2, "mach": 0.84, "alpha": 3.06, "max_seconds": 1200, "reference_max_seconds": 1200}],
  "seeds": [1, 2, 3],
  "cooldown": {"min_s": 120, "max_s": 420}}
