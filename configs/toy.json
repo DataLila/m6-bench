@@ -1,0 +1,5 @@
+{"candidates": ["../candidates/toy.json"],
+ "scenarios": [{"name": "L3-M0.84", "level": 3, "mach": 0.84, "alpha": 3.06}],
+ "seeds": [1, 2, 3], "max_seconds": 8, "session_idle_s": 3, "idle_s": 1, "setup_grace_s": 10,
+ "cooldown": {"min_s": 1, "max_s": 3},
+ "reference": {"max_seconds": 10, "window": 10, "steady_rel": 1e-9}}

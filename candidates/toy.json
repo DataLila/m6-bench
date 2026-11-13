@@ -1,0 +1,2 @@
+{"name": "toy", "workdir": "..", "command": ["python3", "examples/toy_candidate.py"], "extra_args": [],
+  "memory_gb": {"3": 1, "2": 1}, "version_cmd": ["echo", "toy-0"]}
